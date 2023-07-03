@@ -3,6 +3,7 @@
 #include "collision.h"
 #include "parse.h"
 #include <assert.h>
+#include <complex.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
@@ -14,20 +15,21 @@
 static const double ATOM_RADIUS = 29./82;
 static const double SQRT3_2 = 0.8660254037844386;
 
-struct xy_vector {
-    double x;
-    double y;
-};
-static struct xy_vector to_xy(struct vector p)
+typedef float _Complex xy_vector;
+#define x(xy) (crealf(xy))
+#define y(xy) (cimagf(xy))
+#define xy(x, y) ((x) + _Complex_I * (y))
+
+static xy_vector to_xy(struct vector p)
 {
-    return (struct xy_vector){
+    return xy(
         p.u + p.v * 0.5,
-        p.v * SQRT3_2,
-    };
+        p.v * SQRT3_2
+    );
 }
-static double xy_len2(struct xy_vector xy)
+static double xy_len2(xy_vector xy)
 {
-    return xy.x * xy.x + xy.y * xy.y;
+    return x(xy) * x(xy) + y(xy) * y(xy);
 }
 
 struct atom_ref_at_position {
@@ -525,7 +527,7 @@ static struct vector normalize_axis(struct vector p)
     return p;
 }
 
-static bool swing_intersection(double swing_radius_squared, struct xy_vector center, struct xy_vector *hit)
+static bool swing_intersection(double swing_radius_squared, xy_vector center, xy_vector *hit)
 {
     double r2 = swing_radius_squared;
     double d2 = xy_len2(center);
@@ -536,17 +538,17 @@ static bool swing_intersection(double swing_radius_squared, struct xy_vector cen
     // note that, if there are two intersection points, this chooses the point
     // where the arc *leaves* the circle (the most counterclockwise of the two),
     // which guarantees forward progress.
-    hit->x = (x * center.x - y * center.y) / (2 * d2);
-    hit->y = (x * center.y + y * center.x) / (2 * d2);
+    *hit = xy((x * x(center) - y * y(center)) / (2 * d2),
+              (x * y(center) + y * x(center)) / (2 * d2));
     return true;
 }
 
 // returns a positive number if a -> b is a counter-clockwise rotation,
 // a negative number if a -> b is a clockwise rotation, and zero if the rotation
 // direction is indeterminate (if the points are either equal or antipodal).
-static double ccw(struct xy_vector a, struct xy_vector b)
+static double ccw(xy_vector a, xy_vector b)
 {
-    return a.x * b.y - a.y * b.x;
+    return x(a) * y(b) - y(a) * x(b);
 }
 
 static void record_swing_area(struct board *board, struct vector position, struct vector base, int rotation)
@@ -558,36 +560,36 @@ static void record_swing_area(struct board *board, struct vector position, struc
     p.v -= base.v;
     if (rotation == -1)
         p = (struct vector){ p.u + p.v, -p.u };
-    struct xy_vector current = to_xy(p);
-    struct xy_vector end = to_xy((struct vector){ -p.v, p.u + p.v });
+    xy_vector current = to_xy(p);
+    xy_vector end = to_xy((struct vector){ -p.v, p.u + p.v });
     double r2 = xy_len2(current);
     if (r2 < 1)
         return;
     while (true) {
         // convert back to grid coordinates.
-        int32_t cell_u = (int32_t)floor(current.x - 0.5 * current.y / SQRT3_2);
-        int32_t cell_v = (int32_t)floor(current.y / SQRT3_2);
-        struct xy_vector min = { 0 };
+        int32_t cell_u = (int32_t)floor(x(current) - 0.5 * y(current) / SQRT3_2);
+        int32_t cell_v = (int32_t)floor(y(current) / SQRT3_2);
+        xy_vector min = 0;
         struct vector min_cell = { 0 };
         // find the intersection point for the hex at each neighboring grid
         // cell, using the ccw() function to determine which hex the swing arc
         // will encounter next.
         for (int32_t u = cell_u - 1; u <= cell_u + 2; ++u) {
             for (int32_t v = cell_v - 1; v <= cell_v + 2; ++v) {
-                struct xy_vector center = to_xy((struct vector){ u, v });
-                struct xy_vector hit;
+                xy_vector center = to_xy((struct vector){ u, v });
+                xy_vector hit;
                 if (!swing_intersection(r2, center, &hit))
                     continue;
                 if (ccw(current, hit) <= 0)
                     continue;
-                if ((min.x != 0 || min.y != 0) && ccw(hit, min) <= 0)
+                if ((x(min) != 0 || y(min) != 0) && ccw(hit, min) <= 0)
                     continue;
                 min = hit;
                 min_cell.u = u;
                 min_cell.v = v;
             }
         }
-        assert(min.x != 0 || min.y != 0);
+        assert(x(min) != 0 || y(min) != 0);
         if (ccw(min, end) <= 0)
             break;
         mark_used_area(board, (struct vector){

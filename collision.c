@@ -1,5 +1,6 @@
 #include "collision.h"
 
+#include <complex.h>
 #include <math.h>
 #include <stdlib.h>
 
@@ -7,13 +8,13 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-struct xy_vector {
-    float x;
-    float y;
-};
+typedef float _Complex xy_vector;
+#define x(xy) (crealf(xy))
+#define y(xy) (cimagf(xy))
+#define xy(x, y) ((x) + _Complex_I * (y))
 
 struct collider {
-    struct xy_vector center;
+    xy_vector center;
     float radius;
 };
 
@@ -34,17 +35,17 @@ static const float atomRadius = 29;
 static const float producedAtomRadius = 15;
 static const float armBaseRadius = 20;
 
-static struct xy_vector to_xy(struct vector p)
+static xy_vector to_xy(struct vector p)
 {
-    return (struct xy_vector){
+    return xy(
         hexSizeX * (p.u + 0.5f * p.v),
-        hexSizeY * p.v,
-    };
+        hexSizeY * p.v
+    );
 }
-static struct vector from_xy(struct xy_vector xy)
+static struct vector from_xy(xy_vector xy)
 {
-    float u = xy.x / hexSizeX - 0.5f * xy.y / hexSizeY;
-    float v = xy.y / hexSizeY;
+    float u = x(xy) / hexSizeX - 0.5f * y(xy) / hexSizeY;
+    float v = y(xy) / hexSizeY;
     float w = 0.f - u - v;
     int ui = (int)round(u);
     int vi = (int)round(v);
@@ -61,21 +62,13 @@ static struct vector from_xy(struct xy_vector xy)
         vi = -ui - wi;
     return (struct vector){ ui, vi };
 }
-static float xy_len2(struct xy_vector xy)
+static float xy_len(xy_vector xy)
 {
-    return xy.x * xy.x + xy.y * xy.y;
+    return cabsf(xy);
 }
-static struct xy_vector xy_sub(struct xy_vector a, struct xy_vector b)
+static float xy_dist(xy_vector a, xy_vector b)
 {
-    return (struct xy_vector){ a.x - b.x, a.y - b.y };
-}
-static float xy_len(struct xy_vector xy)
-{
-    return (float)sqrt(xy_len2(xy));
-}
-static float xy_dist(struct xy_vector a, struct xy_vector b)
-{
-    return xy_len(xy_sub(a, b));
+    return xy_len(a - b);
 }
 static float to_radians(int32_t r)
 {
@@ -85,7 +78,7 @@ static float to_radians(int32_t r)
 static void mark_area_and_check_board(struct collider_list *list, struct board *board, struct collider collider, int32_t u, int32_t v)
 {
     struct vector p = { u, v };
-    struct xy_vector center = to_xy(p);
+    xy_vector center = to_xy(p);
     float dist = xy_dist(collider.center, center);
     if (!(dist < collider.radius + atomRadius))
         return;
@@ -122,7 +115,7 @@ static void add_collider(struct collider_list *list, struct board *board, struct
         struct collider other = list->colliders[i];
         if (!(xy_dist(other.center, collider.center) < other.radius + collider.radius))
             continue;
-        // printf("%f %f %f x %f %f %f\n", collider.radius, collider.center.x, collider.center.y, other.radius, other.center.x, other.center.y);
+        // printf("%f %f %f x %f %f %f\n", collider.radius, x(collider.center), y(collider.center), other.radius, x(other.center), y(other.center));
         list->collision = true;
         if (list->collision_location)
             *list->collision_location = p;
@@ -159,10 +152,9 @@ bool collision(struct solution *solution, struct board *board, float increment, 
         for (size_t i = 0; i < solution->number_of_arms; ++i) {
             if (vectors_equal(solution->arms[i].movement, zero_vector))
                 continue;
-            struct xy_vector xy = to_xy(solution->arms[i].position);
-            struct xy_vector tr = to_xy(solution->arms[i].movement);
-            xy.x -= tr.x * (1.f - progress);
-            xy.y -= tr.y * (1.f - progress);
+            xy_vector xy = to_xy(solution->arms[i].position);
+            xy_vector tr = to_xy(solution->arms[i].movement);
+            xy -= tr * (1.f - progress);
             add_collider(&list, board, (struct collider){
                 .center = xy,
                 .radius = armBaseRadius,
@@ -176,7 +168,7 @@ bool collision(struct solution *solution, struct board *board, float increment, 
         size_t atom_index = 0;
         for (size_t i = 0; i < board->movements.length; ++i) {
             struct movement m = board->movements.movements[i];
-            struct xy_vector v = to_xy(m.base);
+            xy_vector v = to_xy(m.base);
             float rotation = to_radians(m.rotation);
             float armRotation = 0;
             float r = (0.f - rotation) * (1.f - progress);
@@ -185,39 +177,33 @@ bool collision(struct solution *solution, struct board *board, float increment, 
                 armRotation = rotation;
                 break;
             case TRACK_MOVEMENT: {
-                struct xy_vector tr = to_xy(m.translation);
-                v.x -= tr.x * (1.f - progress);
-                v.y -= tr.y * (1.f - progress);
+                xy_vector tr = to_xy(m.translation);
+                v -= tr * (1.f - progress);
                 break;
             }
             default:
                 break;
             }
             float baseRotation = to_radians(m.base_rotation);
-            struct xy_vector g = to_xy(m.grabber_offset);
+            xy_vector g = to_xy(m.grabber_offset);
             if (m.type & IS_PISTON) {
                 float len = xy_len(g);
                 float newlen = xy_len(g) - ((float)m.piston_extension) * hexSizeX * (1.f - progress);
-                g.x = newlen / len * g.x;
-                g.y = newlen / len * g.y;
+                g = newlen / len * g;
             }
             float grabberRotation = baseRotation - armRotation * (1.f - progress);
             float grx = (float)cos(grabberRotation);
             float gry = (float)sin(grabberRotation);
-            v.x += g.x * grx - g.y * gry;
-            v.y += g.x * gry + g.y * grx;
+            v += g * xy(grx, gry);
             float rx = (float)cos(r);
             float ry = (float)sin(r);
             for (size_t j = 0; j < m.number_of_atoms; ++j) {
                 struct vector p = board->moving_atoms.atoms_at_positions[atom_index++].position;
                 p.u -= m.absolute_grab_position.u;
                 p.v -= m.absolute_grab_position.v;
-                struct xy_vector xy = to_xy(p);
+                xy_vector xy = to_xy(p);
                 add_collider(&list, board, (struct collider){
-                    .center = {
-                        v.x + (xy.x * rx - xy.y * ry),
-                        v.y + (xy.x * ry + xy.y * rx),
-                    },
+                    .center = v + xy * xy(rx, ry),
                     .radius = atomRadius,
                 });
             }
@@ -228,7 +214,7 @@ bool collision(struct solution *solution, struct board *board, float increment, 
         // for (size_t i = 0; i < list.length; ++i) {
         //     if (i > 0)
         //         printf(",");
-        //     printf("[%f,%f,%f]", list.colliders[i].radius, list.colliders[i].center.x, list.colliders[i].center.y);
+        //     printf("[%f,%f,%f]", list.colliders[i].radius, x(list.colliders[i].center), y(list.colliders[i].center));
         // }
         // printf("],");
     }
